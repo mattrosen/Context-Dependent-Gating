@@ -35,7 +35,7 @@ par = {
     'batch_size'                    : 256,
     'n_train_batches'               : 3906, # MNIST: 3906*256 = 20 epochs * 50000
                                             # ImageNet: 977*256, likewise
-    'n_train_batches_conv'          : 20000,
+    'n_train_batches_conv'          : 5000,
 
     # Omega parameters
     'omega_c'                       : 0.05,
@@ -86,7 +86,7 @@ def update_dependencies():
     """
 
     par['n_layers'] = len(par['layer_dims'])
-    if par['task'] == 'mnist' or par['task'] == 'imagenet':
+    if par['task'] == 'mnist' or par['task'] == 'imagenet' or par['task'] == 'colored_mnist':
         par['labels_per_task'] = 10
     elif par['task'] == 'cifar':
         par['labels_per_task'] = 5

@@ -50,7 +50,7 @@ class Model:
             either through a convolutional network or with dropout. """
 
         # Apply input condition
-        if par['task'] == 'cifar' or par['task'] == 'imagenet':
+        if par['task'] == 'cifar' or par['task'] == 'imagenet' or par['task'] == 'colored_mnist':
             self.x = self.apply_convolutional_layers()
         elif par['task'] == 'mnist':
             self.x = tf.nn.dropout(self.input_data, self.input_droput_keep_pct)
@@ -109,7 +109,7 @@ class Model:
             convolutional weights are loaded from a file in par['save_dir']. """
 
         # Load weights
-        conv_weights = pickle.load(open(par['save_dir'] + 'conv_weights.pkl','rb'))
+        conv_weights = pickle.load(open(par['save_dir'] + par['task'] + '_conv_weights.pkl','rb'))
 
         # Apply first two convolutional layers
         conv1 = tf.layers.conv2d(inputs=self.input_data,filters=32, kernel_size=[3, 3], kernel_initializer = \
@@ -291,7 +291,7 @@ class Model:
             small_omega_var[var.op.name] = tf.Variable(tf.zeros(var.get_shape()), trainable=False)
             reset_small_omega_ops.append(tf.assign( small_omega_var[var.op.name], small_omega_var[var.op.name]*0.0))
             update_big_omega_ops.append(tf.assign_add( self.big_omega_var[var.op.name], tf.div(tf.nn.relu(small_omega_var[var.op.name]), \
-            	(par['omega_xi'] + tf.square(var-prev_weights[var.op.name])))))
+                (par['omega_xi'] + tf.square(var-prev_weights[var.op.name])))))
 
         # After each task is complete, call update_big_omega and reset_small_omega
         self.update_big_omega = tf.group(*update_big_omega_ops)
@@ -308,6 +308,40 @@ class Model:
                 update_small_omega_ops.append(tf.assign_add(small_omega_var[var.op.name], -self.delta_grads[var.op.name]*grad))
             self.update_small_omega = tf.group(*update_small_omega_ops) # 1) update small_omega after each train!
 
+# Stimulus
+def colorful_mnist(mnist_dir, sep=0.0):
+    """ Loads MNIST data; adds color, according to separability parameter.
+        Returns training/test images, training/test labels. """
+
+    # load data
+    mndata = MNIST(mnist_dir)
+    tr_img, tr_lab = mndata.load_training()
+    te_img, te_lab = mndata.load_testing()
+
+    # Put the images into arrays, reshape for coloring
+    tr_img = np.array(tr_img).reshape((-1, 28, 28))
+    te_img = np.array(te_img).reshape((-1, 28, 28))
+
+    # Pad the images to 32x32 size
+    tr_img = np.pad(tr_img, 2, mode='constant')[2:-2,:,:,np.newaxis]
+    te_img = np.pad(te_img, 2, mode='constant')[2:-2,:,:,np.newaxis]
+
+    # Extend to RGB
+    tr_img = np.concatenate([tr_img, tr_img, tr_img], axis=3)
+    te_img = np.concatenate([te_img, te_img, te_img], axis=3)
+
+    # Convert the MNIST images to binary (at loc of number)
+    tr_img_ind = (tr_img < 0.5)
+
+    # Color the training images, based on separability         
+    tr_img = color_images(tr_img, tr_lab, sep, tr_img_ind)
+
+    # Reshape labels for utility
+    tr_lab = np.reshape(np.array(tr_lab),(-1,1))
+    te_lab = np.reshape(np.array(te_lab),(-1,1))
+
+    return tr_img, tr_lab, te_img, te_lab
+
 
 def main(save_fn, gpu_id=None):
     """ Run supervised learning training """
@@ -321,7 +355,7 @@ def main(save_fn, gpu_id=None):
 
     # If desired, train the convolutional layers with the CIFAR datasets
     # Otherwise, the network will load convolutional weights from the saved file
-    if (par['task'] == 'cifar' or par['task'] == 'imagenet') and par['train_convolutional_layers']:
+    if (par['task'] in ['cifar', 'imagenet', 'colored_mnist']) and par['train_convolutional_layers']:
         convolutional_layers.ConvolutionalLayers()
 
     print('\nRunning model.\n')
@@ -332,6 +366,8 @@ def main(save_fn, gpu_id=None):
     # Create placeholders for the model
     if par['task'] == 'mnist':
         x   = tf.placeholder(tf.float32, [par['batch_size'], par['layer_dims'][0]], 'stim')
+    elif par['task'] == 'colored_mnist':
+        x   = tf.placeholder(tf.float32, [par['batch_size'], 32, 32, 3], 'stim')
     elif par['task'] == 'cifar' or par['task'] == 'imagenet':
         x   = tf.placeholder(tf.float32, [par['batch_size'], 32, 32, 3], 'stim')
     y       = tf.placeholder(tf.float32, [par['batch_size'], par['layer_dims'][-1]], 'out')
@@ -342,7 +378,10 @@ def main(save_fn, gpu_id=None):
     input_droput_keep_pct   = tf.placeholder(tf.float32, [], 'input_dropout')
 
     # Set up stimulus
-    stim = stimulus.Stimulus(labels_per_task=par['labels_per_task'])
+    if par['task'] == 'colored_mnist':
+        stim = stimulus.Stimulus(labels_per_task=par['labels_per_task'], sep=par['separability'])
+    else:
+        stim = stimulus.Stimulus(labels_per_task=par['labels_per_task'])
 
     # Initialize accuracy records
     accuracy_full = []
@@ -439,3 +478,7 @@ def main(save_fn, gpu_id=None):
             pickle.dump(save_results, open(par['save_dir'] + save_fn, 'wb'))
 
     print('\nModel execution complete.')
+
+    # write accuracy full to text
+    with open('accs_200_squared.txt', 'a') as f:
+        f.write(str(accuracy_full[0]) + "\n")

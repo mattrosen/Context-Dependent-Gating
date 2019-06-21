@@ -30,6 +30,18 @@ mnist_updates = {
     'multihead'             : False
     }
 
+colored_mnist_updates = {
+    'layer_dims'            : [4096, 128, 128, 10],
+    'n_tasks'               : 1,
+    'task'                  : 'colored_mnist',
+    'save_dir'              : './savedir/',
+    'n_train_batches'       : 3906,
+    'drop_keep_pct'         : 0.5,
+    'input_drop_keep_pct'   : 1.0,
+    'multihead'             : False,
+    'separability'          : 0.0
+    }
+
 cifar_updates = {
     'layer_dims'            : [4096, 1000, 1000, 5],
     'n_tasks'               : 20,
@@ -72,6 +84,18 @@ def run_mnist_SI_model(gpu_id):
     save_fn = 'mnist_SI_XdG.pkl'
     try_model(save_fn, gpu_id)
 
+def run_colored_mnist_SI_model(gpu_id):
+    print('Colored MNIST - Synaptic Stabilization = SI - Gating = 80%')
+    for sep in np.linspace(0., 1., 50):
+        print(f"Separability: {sep}")
+        update_parameters(colored_mnist_updates)
+        update_parameters({'gating_type': None,'gate_pct': 0.8, 'input_drop_keep_pct': 0.8})
+        update_parameters({'stabilization': 'pathint', 'omega_c': 0.035, 'omega_xi': 0.01})
+        update_parameters({'train_convolutional_layers': True})
+        update_parameters({'separability': sep})
+        save_fn = f'mnist_colorized_{sep}.pkl'
+        try_model(save_fn, gpu_id)
+
 # training a network on 100 sequential Imagenet tasks using synaptic intelligence 
 # and context-dependent gating (XdG) 
 def run_imagenet_SI_model(gpu_id):
@@ -82,3 +106,8 @@ def run_imagenet_SI_model(gpu_id):
     update_parameters({'train_convolutional_layers': True})
     save_fn = 'imagenet_SI_XdG.pkl'
     try_model(save_fn, gpu_id)
+
+# main
+if __name__ == "__main__":
+    gpu_id = sys.argv[1]
+    run_colored_mnist_SI_model(gpu_id)

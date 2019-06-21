@@ -7,11 +7,18 @@ import pickle
 
 class Stimulus:
 
-    def __init__(self, include_cifar10 = False, labels_per_task = 5, include_all = False):
+    def __init__(self, include_cifar10 = False, labels_per_task = 5, include_all = False, sep=0.0, bw=False):
 
         if par['task'] == 'mnist':
             self.mnist_dir = './mnist/data/original'
             self.generate_mnist_tuning()
+
+        elif par['task'] == 'colored_mnist':
+            self.mnist_dir = './mnist/data/original'
+            self.generate_colored_mnist_tuning(sep, bw)
+            self.labels_per_task = 10
+            self.num_labels = 10
+            self.find_indices()
 
         elif par['task'] == 'cifar':
             self.cifar10_dir = './cifar/cifar-10-python/'
@@ -28,6 +35,40 @@ class Stimulus:
             self.generate_imagenet_tuning()
             self.find_indices()
 
+    ####################################
+    ###       Utility function       ###
+    ####################################
+
+    def color_images(self, sep, ind):
+        """ Add color to training images s.t. separability of extent 
+            sep is achieved. """
+        import matplotlib.pyplot as plt 
+
+        # Compute mean of colors for setting by class
+        max_value = 16581375 #255**3
+        interval = int(max_value / (self.num_outputs + 2))
+        colors = [hex(I)[2:].zfill(6) for I in range(0, max_value, interval)]
+        colors = np.array([[int(i[:2], 16)  / 255, 
+                            int(i[2:4], 16) / 255, 
+                            int(i[4:], 16)  / 255] for i in colors][1:-1])
+
+        # Determine width of color distribution (based on sep. parameter)
+        sd  = 200/255 * (1 - sep)**2
+
+        # Set colors by class for training images
+        for i in range(self.mnist_train_images.shape[0]):
+
+            image     = self.mnist_train_images[i,:,:,:] / 255.
+            cur_color = colors[self.mnist_train_labels[i]]
+
+            # set the image to be this color
+            for j in range(3):
+                image[:, :, j] = image[:,:,j] * np.random.normal(cur_color[j], sd)
+
+            image[ind[i]] = 0
+            self.mnist_train_images[i,:,:,:] = image
+
+        return
 
     ####################################
     ### Loading and Tuning Functions ###
@@ -51,6 +92,62 @@ class Stimulus:
         # Put the images into arrays
         self.mnist_train_images = np.array(self.mnist_train_images)/255
         self.mnist_test_images  = np.array(self.mnist_test_images)/255
+
+        # Generate as many permutations as tasks
+        self.mnist_permutation  = []
+        for t in range(par['n_tasks']):
+            self.mnist_permutation.append(np.random.permutation(784))
+
+    def generate_colored_mnist_tuning(self, sep, bw):
+        """ Load MNIST data and parse its images, labels, and indices.
+            Also generate the required permutations. """
+
+        # Import MNIST data
+        from mnist import MNIST
+        mndata = MNIST(self.mnist_dir)
+        self.mnist_train_images, self.mnist_train_labels = mndata.load_training()
+        self.mnist_test_images,  self.mnist_test_labels  = mndata.load_testing()
+
+        # Get number of training and testing examples
+        self.num_train_examples = len(self.mnist_train_images)
+        self.num_test_examples  = len(self.mnist_test_images)
+        self.num_outputs        = 10
+
+
+        # Put the images into arrays, reshape for coloring
+        tr_img = np.array(self.mnist_train_images).reshape((-1, 28, 28))
+        te_img = np.array(self.mnist_test_images).reshape((-1, 28, 28))
+
+        # Pad the images to 32x32 size
+        tr_img = np.pad(tr_img, 2, mode='constant')[2:-2,:,:,np.newaxis]
+        te_img = np.pad(te_img, 2, mode='constant')[2:-2,:,:,np.newaxis]
+
+        #tr_img = np.array(self.mnist_train_images).reshape((-1, 32, 32, 1))
+        #te_img = np.array(self.mnist_test_images).reshape((-1, 32, 32, 1))
+
+        # Extend to RGB
+        tr_img = np.concatenate([tr_img, tr_img, tr_img], axis=3)
+        te_img = np.concatenate([te_img, te_img, te_img], axis=3)
+
+        # Convert the MNIST images to binary (at loc of number)
+        tr_img_ind = (tr_img < 0.5)
+
+        self.mnist_train_images = tr_img
+        self.mnist_test_images = te_img
+
+        # Color the training images, based on separability
+        if not bw:         
+            self.color_images(sep, tr_img_ind)
+
+        self.train_images = self.mnist_train_images
+        self.test_images  = self.mnist_test_images
+
+        self.train_labels = np.reshape(np.array(self.mnist_train_labels),(-1,1))
+        self.test_labels  = np.reshape(np.array(self.mnist_test_labels),(-1,1))
+
+        
+        #print(self.train_labels)
+        #print(0/0)
 
         # Generate as many permutations as tasks
         self.mnist_permutation  = []
@@ -218,6 +315,50 @@ class Stimulus:
         # Return images and labels
         return batch_data, batch_labels
 
+    def generate_colored_mnist_batch(self, task_num, test=False):
+        """ Generate a batch of randomly selected MNIST images,
+            based on the current task. """
+
+        # Select example indices
+        ind_ref = self.test_ind if test else self.train_ind
+        ind = ind_ref[task_num]
+        q = np.random.randint(0,len(ind),par['batch_size'])
+
+        # Pick out batch data and labels
+        batch_data   = np.zeros((par['batch_size'], 32,32,3), dtype = np.float32)
+        batch_labels = np.zeros((par['batch_size'], par['layer_dims'][-1]), dtype = np.float32)
+
+        # Build multihead mask
+        if par['multihead']:
+            mask = np.zeros((par['batch_size'], par['layer_dims'][-1]), dtype = np.float32)
+            mask[:, task_num*self.labels_per_task:(task_num+1)*self.labels_per_task] = 1
+        else:
+            mask = np.ones((par['batch_size'], par['layer_dims'][-1]), dtype = np.float32)
+
+        for i in range(par['batch_size']):
+            if test:
+                # Select images and labels from the testing set if required
+                # Adjust for using the multihead network architecture
+                if par['multihead']:
+                    k = int(self.test_labels[ind[q[i]]])
+                else:
+                    k = self.test_labels[ind[q[i]]][0]%self.labels_per_task
+                batch_labels[i,k] = 1
+                batch_data[i,:] = np.float32(np.reshape(self.test_images[ind[q[i]], :],(1,32,32,3), order='F'))
+            else:
+                # Select images and labels from the training set if required
+                # Adjust for using the multihead network architecture
+                if par['multihead']:
+                    k = int(self.train_labels[ind[q[i]]])
+                else:
+                    k = self.train_labels[ind[q[i]]][0]%self.labels_per_task
+                batch_labels[i,k] = 1
+                batch_data[i,:] = np.float32(np.reshape(self.train_images[ind[q[i]], :],(1,32,32,3), order='F'))
+
+        # Return images, labels, and masks
+        return batch_data, batch_labels, mask
+
+
 
     def make_batch(self, task_num, test=False):
         """ Based on the task number and testing status, generate a randomly
@@ -230,7 +371,9 @@ class Stimulus:
         if par['task'] == 'mnist':
             batch_data, batch_labels = self.generate_mnist_batch(task_num, test)
             mask = np.ones((par['batch_size'], 10), dtype=np.float32)
-        elif par['task'] == 'cifar' or par['task'] == 'imagenet':
+        elif par['task'] == 'colored_mnist':
+            batch_data, batch_labels, mask = self.generate_colored_mnist_batch(task_num, test)
+        elif par['task'] == 'cifar' or par['task'] == 'imagenet' or par['task'] == 'colored_mnist':
             batch_data, batch_labels, mask = self.generate_image_batch(task_num, test)
         else:
             raise Exception('Unrecognized task')
